@@ -1,28 +1,65 @@
 // ==========================================
-// 1. STATE UTAMA APLIKASI (DUKUNG MULTI-TARGET)
+// 1. STATE MANAGEMENT (FOKUS MANAJEMEN UANG SAKU)
 // ==========================================
 let appData = {
-  allowance: 0,
+  allowance: 70000,
   periodDays: 7,
-  autoSavePercent: 10,
-  targets: [],          // Menggunakan array untuk menampung banyak target
-  activeTargetId: null, // ID target yang sedang dipilih untuk ditampilkan di Beranda
-  savingsTotal: 0,
-  expenses: [],
+  targets: [],
+  activeTargetId: null,
+  transactions: [],
   streakDays: 0,
   lastStreakDate: null,
-  isCelebrated: false
+  snakeHighScore: 0,
+  brickHighScore: 0
 };
 
-// Daftar Lencana Pencapaian
 const BADGES = [
-  { id: 'first_save', name: 'Nabung Perdana', icon: '🌱', reqStreak: 0 },
-  { id: 'streak_3', name: 'Hemat 3 Hari', icon: '⚡', reqStreak: 3 },
-  { id: 'streak_7', name: 'Master 7 Hari', icon: '👑', reqStreak: 7 }
+  { id: 'first_save', name: 'Nabung Perdana', icon: '🌱', reqStreak: 0, reqSave: true },
+  { id: 'streak_3', name: 'Hemat 3 Hari', icon: '🪴', reqStreak: 3, reqSave: false },
+  { id: 'streak_7', name: 'Master 7 Hari', icon: '🌳', reqStreak: 7, reqSave: false }
 ];
 
+let selectedFilterPeriod = 'daily';
+let currentGame = 'snake';
+let gameInterval = null;
+let gameScore = 0;
+
 // ==========================================
-// 2. HELPER FORMAT RUPIAH OTOMATIS
+// 2. AUDIO CONFETTI SYNTH (SUARA SELEBRASI)
+// ==========================================
+function playConfettiSound() {
+  try {
+    const AudioContext = window.AudioContext || window.webkitAudioContext;
+    if (!AudioContext) return;
+    const ctx = new AudioContext();
+
+    const playTone = (freq, type, delay, duration) => {
+      setTimeout(() => {
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.type = type;
+        osc.frequency.setValueAtTime(freq, ctx.currentTime);
+        gain.gain.setValueAtTime(0.15, ctx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + duration);
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        osc.start();
+        osc.stop(ctx.currentTime + duration);
+      }, delay);
+    };
+
+    // Nada Fanfare Selebrasi Konfeti
+    playTone(523.25, 'triangle', 0, 0.15);   // C5
+    playTone(659.25, 'triangle', 100, 0.15); // E5
+    playTone(783.99, 'triangle', 200, 0.15); // G5
+    playTone(1046.50, 'square', 300, 0.4);   // C6
+  } catch (e) {
+    console.log('Audio Context error', e);
+  }
+}
+
+// ==========================================
+// 3. HELPER FORMAT & SANITASI NUMERIK
 // ==========================================
 function formatRupiahInput(e) {
   let value = e.target.value.replace(/[^0-9]/g, '');
@@ -36,387 +73,782 @@ function formatRupiahInput(e) {
 
 function parseRupiahValue(textValue) {
   if (!textValue) return 0;
-  const cleanNumber = textValue.replace(/[^0-9]/g, '');
+  const cleanNumber = String(textValue).replace(/[^0-9]/g, '');
   return parseFloat(cleanNumber) || 0;
 }
 
 // ==========================================
-// 3. INISIALISASI HALAMAN (DOM LOADED)
+// 4. INIT & EVENT LISTENERS
 // ==========================================
 document.addEventListener('DOMContentLoaded', () => {
   initTheme();
   loadData();
+  checkAndRolloverUnusedBudget();
   registerEvents();
   initTabNavigation();
-  render();
+  initFilterEvents();
+  initGameEvents();
+  recalculateAll();
 });
 
-// ==========================================
-// 4. NAVIGASI TAB BAWAH (BERANDA / TARGET)
-// ==========================================
-function initTabNavigation() {
-  const navHomeBtn = document.getElementById('navHomeBtn');
-  const navSettingsBtn = document.getElementById('navSettingsBtn');
-  const tabHome = document.getElementById('tabHome');
-  const tabSettings = document.getElementById('tabSettings');
-
-  navHomeBtn.addEventListener('click', () => {
-    navHomeBtn.classList.add('active');
-    navSettingsBtn.classList.remove('active');
-    tabHome.classList.add('active-tab');
-    tabSettings.classList.remove('active-tab');
-  });
-
-  navSettingsBtn.addEventListener('click', () => {
-    navSettingsBtn.classList.add('active');
-    navHomeBtn.classList.remove('active');
-    tabSettings.classList.add('active-tab');
-    tabHome.classList.remove('active-tab');
-  });
-}
-
-// ==========================================
-// 5. FITUR TEMA (DARK / LIGHT MODE)
-// ==========================================
 function initTheme() {
-  const savedTheme = localStorage.getItem('sakuquest_theme') || 'dark';
+  const savedTheme = localStorage.getItem('sakuq_theme') || 'dark';
   document.documentElement.setAttribute('data-theme', savedTheme);
-  updateThemeIcon(savedTheme);
-}
-
-function updateThemeIcon(theme) {
   const themeBtn = document.getElementById('themeToggleBtn');
-  if (themeBtn) {
-    themeBtn.textContent = theme === 'light' ? '☀️' : '🌙';
-  }
+  if (themeBtn) themeBtn.textContent = savedTheme === 'light' ? '☀️' : '🌙';
 }
 
 function toggleTheme() {
-  const currentTheme = document.documentElement.getAttribute('data-theme') || 'dark';
-  const newTheme = currentTheme === 'dark' ? 'light' : 'dark';
-  document.documentElement.setAttribute('data-theme', newTheme);
-  localStorage.setItem('sakuquest_theme', newTheme);
-  updateThemeIcon(newTheme);
+  const current = document.documentElement.getAttribute('data-theme') || 'dark';
+  const next = current === 'dark' ? 'light' : 'dark';
+  document.documentElement.setAttribute('data-theme', next);
+  localStorage.setItem('sakuq_theme', next);
+  document.getElementById('themeToggleBtn').textContent = next === 'light' ? '☀️' : '🌙';
 }
 
-// ==========================================
-// 6. PENYIMPANAN DATA (LOCALSTORAGE)
-// ==========================================
 function loadData() {
-  const saved = localStorage.getItem('sakuquest_data');
+  const saved = localStorage.getItem('sakuq_data');
   if (saved) {
-    const parsed = JSON.parse(saved);
-    appData = { ...appData, ...parsed };
-    
-    // Migrasi data lama (jika sebelumnya pengguna menggunakan target tunggal)
-    if (!appData.targets) appData.targets = [];
-    if (parsed.targetName && appData.targets.length === 0) {
-      const oldTargetId = Date.now();
-      appData.targets.push({
-        id: oldTargetId,
-        name: parsed.targetName,
-        amount: parsed.targetAmount || 0,
-        link: parsed.targetLink || ''
-      });
-      appData.activeTargetId = oldTargetId;
+    try {
+      appData = { ...appData, ...JSON.parse(saved) };
+      if (!appData.targets) appData.targets = [];
+      if (!appData.transactions) appData.transactions = [];
+    } catch (e) {
+      console.error('Data corrupt');
     }
   }
 }
 
 function saveData() {
-  localStorage.setItem('sakuquest_data', JSON.stringify(appData));
-  render();
+  localStorage.setItem('sakuq_data', JSON.stringify(appData));
+  recalculateAll();
 }
 
-// ==========================================
-// 7. HANDLING FORM & EVENT LISTENERS
-// ==========================================
-function registerEvents() {
-  const themeBtn = document.getElementById('themeToggleBtn');
-  if (themeBtn) {
-    themeBtn.onclick = toggleTheme;
-  }
+function initTabNavigation() {
+  const tabs = [
+    { btn: 'navHomeBtn', tab: 'tabHome' },
+    { btn: 'navTxBtn', tab: 'tabTransaction' },
+    { btn: 'navTargetBtn', tab: 'tabTarget' },
+    { btn: 'navStatsBtn', tab: 'tabStats' },
+    { btn: 'navGamesBtn', tab: 'tabGames' }
+  ];
 
-  const rupiahInputs = ['targetAmountInput', 'allowanceInput', 'expenseAmount'];
-  rupiahInputs.forEach(id => {
-    const inputEl = document.getElementById(id);
-    if (inputEl) {
-      inputEl.addEventListener('input', formatRupiahInput);
+  tabs.forEach(t => {
+    const btnEl = document.getElementById(t.btn);
+    if (btnEl) {
+      btnEl.addEventListener('click', () => {
+        stopGameLoop();
+        tabs.forEach(x => {
+          document.getElementById(x.btn).classList.remove('active');
+          document.getElementById(x.tab).classList.remove('active-tab');
+        });
+        btnEl.classList.add('active');
+        document.getElementById(t.tab).classList.add('active-tab');
+        
+        if (t.tab === 'tabStats') renderAnalysis();
+        if (t.tab === 'tabGames') resetGameScreen();
+      });
+    }
+  });
+}
+
+function registerEvents() {
+  document.getElementById('themeToggleBtn').onclick = toggleTheme;
+
+  ['txAmount', 'allowanceInput', 'targetAmountInput'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.addEventListener('input', formatRupiahInput);
+  });
+
+  const txTypeSelect = document.getElementById('txType');
+  const targetGroup = document.getElementById('targetAllocationGroup');
+  txTypeSelect.addEventListener('change', () => {
+    if (txTypeSelect.value === 'save') {
+      targetGroup.classList.remove('hidden-field');
+      populateTargetDropdown();
+    } else {
+      targetGroup.classList.add('hidden-field');
     }
   });
 
-  // Form Tambah Target Impian (Mendukung Multi Target)
-  const targetForm = document.getElementById('targetForm');
-  if (targetForm) {
-    targetForm.addEventListener('submit', (e) => {
-      e.preventDefault();
-      const name = document.getElementById('targetNameInput').value;
-      const amount = parseRupiahValue(document.getElementById('targetAmountInput').value);
-      const link = document.getElementById('targetLinkInput').value;
+  document.getElementById('transactionForm').addEventListener('submit', (e) => {
+    e.preventDefault();
+    const type = document.getElementById('txType').value;
+    const title = document.getElementById('txTitle').value;
+    const category = document.getElementById('txCategory').value;
+    const amount = parseRupiahValue(document.getElementById('txAmount').value);
+    const targetId = type === 'save' ? parseInt(document.getElementById('targetAllocationSelect').value, 10) : null;
 
-      const newTarget = {
-        id: Date.now(),
-        name,
-        amount,
-        link
-      };
+    if (amount <= 0) return alert('Masukkan nominal angka di atas 0.');
 
-      appData.targets.push(newTarget);
-      
-      // Jika belum ada target aktif, jadikan target baru ini sebagai yang aktif
-      if (!appData.activeTargetId) {
-        appData.activeTargetId = newTarget.id;
-      }
+    if (type === 'save' && appData.targets.length === 0) {
+      return alert('Buat target tabungan terlebih dahulu di menu Target!');
+    }
 
-      document.getElementById('targetNameInput').value = '';
-      document.getElementById('targetAmountInput').value = '';
-      document.getElementById('targetLinkInput').value = '';
-
-      saveData();
-      alert(`🎯 Target baru "${name}" berhasil ditambahkan!`);
+    appData.transactions.unshift({
+      id: Date.now(),
+      type,
+      title,
+      category,
+      amount,
+      targetId,
+      timestamp: Date.now(),
+      date: new Date().toLocaleDateString('id-ID')
     });
-  }
 
-  // Form Uang Saku & Auto-Save
-  const allowanceForm = document.getElementById('allowanceForm');
-  if (allowanceForm) {
-    allowanceForm.addEventListener('submit', (e) => {
-      e.preventDefault();
-      const allowance = parseRupiahValue(document.getElementById('allowanceInput').value);
-      const periodDays = parseInt(document.getElementById('periodSelect').value) || 1;
-      const autoSavePercent = parseFloat(document.getElementById('autoSavePercent').value) || 0;
+    document.getElementById('txTitle').value = '';
+    document.getElementById('txAmount').value = '';
+    
+    updateStreak();
+    saveData();
+    alert('✅ Transaksi berhasil dicatat!');
+  });
 
-      const autoSavedAmount = (allowance * autoSavePercent) / 100;
-      
-      appData.allowance = allowance - autoSavedAmount;
-      appData.periodDays = periodDays;
-      appData.autoSavePercent = autoSavePercent;
-      appData.savingsTotal += autoSavedAmount;
+  document.getElementById('targetForm').addEventListener('submit', (e) => {
+    e.preventDefault();
+    const name = document.getElementById('targetNameInput').value;
+    const amount = parseRupiahValue(document.getElementById('targetAmountInput').value);
+    let link = document.getElementById('targetLinkInput').value.trim();
 
-      saveData();
-      alert(`💰 Uang saku diatur! Rp ${autoSavedAmount.toLocaleString('id-ID')} tersimpan.`);
-    });
-  }
+    if (amount <= 0) return alert('Nominal target harus lebih dari 0.');
 
-  // Form Catat Pengeluaran
-  const expenseForm = document.getElementById('expenseForm');
-  if (expenseForm) {
-    expenseForm.addEventListener('submit', (e) => {
-      e.preventDefault();
-      const title = document.getElementById('expenseTitle').value;
-      const amount = parseRupiahValue(document.getElementById('expenseAmount').value);
+    if (link && !link.startsWith('http://') && !link.startsWith('https://')) {
+      link = 'https://' + link;
+    }
 
-      appData.expenses.unshift({
-        id: Date.now(),
-        title,
-        amount,
-        date: new Date().toLocaleDateString('id-ID')
-      });
+    const newTarget = { id: Date.now(), name, amount, link: link || null };
+    appData.targets.push(newTarget);
+    if (!appData.activeTargetId) appData.activeTargetId = newTarget.id;
 
-      updateStreak();
-      document.getElementById('expenseTitle').value = '';
-      document.getElementById('expenseAmount').value = '';
-      saveData();
-    });
-  }
+    document.getElementById('targetNameInput').value = '';
+    document.getElementById('targetAmountInput').value = '';
+    document.getElementById('targetLinkInput').value = '';
 
-  // Tombol Reset Data
+    saveData();
+    alert(`🎯 Target "${name}" berhasil ditambahkan!`);
+  });
+
+  document.getElementById('allowanceForm').addEventListener('submit', (e) => {
+    e.preventDefault();
+    appData.allowance = parseRupiahValue(document.getElementById('allowanceInput').value);
+    appData.periodDays = parseInt(document.getElementById('periodSelect').value, 10) || 7;
+
+    saveData();
+    alert('💰 Anggaran uang saku berhasil disimpan!');
+  });
+
   const resetBtn = document.getElementById('resetDataBtn');
   if (resetBtn) {
-    resetBtn.addEventListener('click', () => {
-      if (confirm('Apakah Anda yakin ingin menghapus seluruh data SakuQuest?')) {
-        localStorage.removeItem('sakuquest_data');
-        location.reload();
+    resetBtn.onclick = function() {
+      if (confirm('⚠️ Yakin ingin menghapus seluruh catatan uang saku, target, dan riwayat SakuQ?')) {
+        localStorage.removeItem('sakuq_data');
+        localStorage.removeItem('sakuq_theme');
+        localStorage.removeItem('sakuq_last_rollover');
+        alert('🗑️ Seluruh data berhasil dibersihkan!');
+        window.location.reload(true);
       }
-    });
+    };
+  }
+}
+
+function populateTargetDropdown() {
+  const select = document.getElementById('targetAllocationSelect');
+  if (!select) return;
+
+  if (appData.targets.length === 0) {
+    select.innerHTML = '<option value="">(Belum Ada Target - Buat di Menu Target)</option>';
+  } else {
+    select.innerHTML = appData.targets.map(t => {
+      const isSelected = t.id === appData.activeTargetId ? 'selected' : '';
+      return `<option value="${t.id}" ${isSelected}>${t.name} ${t.id === appData.activeTargetId ? '⭐ (Aktif)' : ''}</option>`;
+    }).join('');
   }
 }
 
 // ==========================================
-// 8. LOGIKA KALKULASI & STREAK
+// 5. STREAK TIKTOK DINAMIS & KALKULASI
 // ==========================================
-function calculateDailyBudget() {
-  if (appData.allowance <= 0) return 0;
-  
-  const totalSpent = appData.expenses.reduce((sum, item) => sum + item.amount, 0);
-  const remainingBudget = appData.allowance - totalSpent;
-  const dailyLimit = remainingBudget / appData.periodDays;
+function recalculateAll() {
+  const today = new Date().toLocaleDateString('id-ID');
+  const dailyLimit = Math.round(appData.allowance / (appData.periodDays || 7));
 
-  return dailyLimit > 0 ? dailyLimit : 0;
+  // Hitung total pengeluaran + menabung hari ini
+  const todayExpense = appData.transactions
+    .filter(tx => tx.date === today && (tx.type === 'expense' || tx.type === 'save'))
+    .reduce((sum, tx) => sum + tx.amount, 0);
+
+  const todayIncome = appData.transactions
+    .filter(tx => tx.date === today && (tx.type === 'income' || tx.type === 'withdraw'))
+    .reduce((sum, tx) => sum + tx.amount, 0);
+
+  const remainingDailyBudget = (dailyLimit + todayIncome) - todayExpense;
+
+  // Cek Peringatan Overbudget & Matikan Api Streak
+  const warningBanner = document.getElementById('overbudgetWarningBanner');
+  if (remainingDailyBudget < 0) {
+    appData.streakDays = 0; // Reset streak seketika
+    if (warningBanner) warningBanner.classList.remove('hidden-field');
+  } else {
+    if (warningBanner) warningBanner.classList.add('hidden-field');
+  }
+
+  // Tampilkan sisa budget (minimal Rp 0 di UI)
+  document.getElementById('dailyBudgetDisplay').textContent = `Rp ${Math.max(0, remainingDailyBudget).toLocaleString('id-ID')}`;
+  document.getElementById('dailyLimitDisplay').textContent = `Rp ${dailyLimit.toLocaleString('id-ID')}`;
+  document.getElementById('allowanceInfoDisplay').textContent = `Rp ${appData.allowance.toLocaleString('id-ID')} / ${appData.periodDays} Hari`;
+  document.getElementById('streakCount').textContent = appData.streakDays;
+
+  // Render ulang UI pendukung
+  renderTikTokStreakBadge();
+  renderTargets();
+  renderBadges();
+  renderHistoryLists();
+}
+
+function renderTikTokStreakBadge() {
+  const badgeEl = document.getElementById('streakBadge');
+  const fireIconEl = document.getElementById('streakFireIcon');
+  const levelLabelEl = document.getElementById('streakLevelLabel');
+  if (!badgeEl) return;
+
+  const count = appData.streakDays;
+  badgeEl.className = 'streak-badge-tiktok';
+
+  if (count === 0) {
+    badgeEl.classList.add('streak-lvl-0');
+    fireIconEl.textContent = '🔥';
+    levelLabelEl.textContent = 'Dingin';
+  } else if (count < 3) {
+    badgeEl.classList.add('streak-lvl-1');
+    fireIconEl.textContent = '🔥';
+    levelLabelEl.textContent = 'Panas';
+  } else if (count < 7) {
+    badgeEl.classList.add('streak-lvl-2');
+    fireIconEl.textContent = '💥';
+    levelLabelEl.textContent = 'Membara';
+  } else {
+    badgeEl.classList.add('streak-lvl-3');
+    fireIconEl.textContent = '⚡';
+    levelLabelEl.textContent = 'Sultan';
+  }
+}
+
+function checkAndRolloverUnusedBudget() {
+  const today = new Date().toLocaleDateString('id-ID');
+  const lastCheck = localStorage.getItem('sakuq_last_rollover');
+
+  if (lastCheck && lastCheck !== today) {
+    const dailyLimit = Math.round(appData.allowance / (appData.periodDays || 7));
+    const yesterdaySpent = appData.transactions
+      .filter(tx => (tx.type === 'expense' || tx.type === 'save') && tx.date === lastCheck)
+      .reduce((sum, tx) => sum + tx.amount, 0);
+
+    const unusedBudget = dailyLimit - yesterdaySpent;
+
+    if (unusedBudget > 0 && appData.targets.length > 0) {
+      const activeTargetId = appData.activeTargetId || appData.targets[0].id;
+      appData.transactions.unshift({
+        id: Date.now(),
+        type: 'save',
+        title: `Hemat Sisa Anggaran (${lastCheck})`,
+        category: 'Umum',
+        amount: unusedBudget,
+        targetId: activeTargetId,
+        timestamp: Date.now(),
+        date: today
+      });
+      appData.streakDays += 1;
+    }
+  }
+
+  localStorage.setItem('sakuq_last_rollover', today);
 }
 
 function updateStreak() {
   const today = new Date().toLocaleDateString('id-ID');
-  const todayExpenses = appData.expenses
-    .filter(item => item.date === today)
-    .reduce((sum, item) => sum + item.amount, 0);
-
-  const dailyBudget = calculateDailyBudget();
-
-  if (todayExpenses <= dailyBudget) {
-    if (appData.lastStreakDate !== today) {
-      appData.streakDays += 1;
-      appData.lastStreakDate = today;
-    }
-  } else {
-    appData.streakDays = 0;
+  if (appData.lastStreakDate !== today) {
+    appData.streakDays += 1;
     appData.lastStreakDate = today;
   }
 }
 
-// ==========================================
-// 9. RENDER UI (PERBARUI TAMPILAN MULTI-TARGET)
-// ==========================================
-function render() {
-  // Update Angka Ringkasan Saku
-  const dailyBudget = calculateDailyBudget();
-  document.getElementById('dailyBudgetDisplay').textContent = `Rp ${Math.round(dailyBudget).toLocaleString('id-ID')}`;
-  document.getElementById('totalSavingsDisplay').textContent = `Rp ${appData.savingsTotal.toLocaleString('id-ID')}`;
-  document.getElementById('streakCount').textContent = appData.streakDays;
+function renderBadges() {
+  const container = document.getElementById('badgesContainer');
+  if (!container) return;
 
-  // Cari Target Aktif
+  const hasSavings = appData.transactions.some(tx => tx.type === 'save');
+
+  container.innerHTML = BADGES.map(b => {
+    let unlocked = false;
+    if (b.reqSave && hasSavings) unlocked = true;
+    if (b.reqStreak > 0 && appData.streakDays >= b.reqStreak) unlocked = true;
+
+    return `
+      <div class="badge-card-item ${unlocked ? 'unlocked' : ''}">
+        <span class="badge-card-icon">${b.icon}</span>
+        <span class="badge-card-title">${b.name}</span>
+      </div>
+    `;
+  }).join('');
+}
+
+// ==========================================
+// 6. RENDER TARGETS (LINK DI BERANDA + SUARA KONFETI)
+// ==========================================
+function renderTargets() {
   const activeTarget = appData.targets.find(t => t.id === appData.activeTargetId) || appData.targets[0] || null;
 
-  // Render Target Aktif di Beranda Utama
-  const targetNameEl = document.getElementById('targetNameDisplay');
-  const targetAmountEl = document.getElementById('targetAmountDisplay');
-  const targetProgressBar = document.getElementById('targetProgressBar');
-  const targetProgressPercent = document.getElementById('targetProgressPercent');
-
   if (activeTarget) {
-    if (activeTarget.link) {
-      targetNameEl.innerHTML = `<a href="${activeTarget.link}" target="_blank" style="color: var(--primary); text-decoration: underline;">${activeTarget.name} 🔗</a>`;
-    } else {
-      targetNameEl.textContent = activeTarget.name;
-    }
+    const targetSavings = appData.transactions
+      .filter(tx => tx.type === 'save' && tx.targetId === activeTarget.id)
+      .reduce((sum, tx) => sum + tx.amount, 0);
 
-    targetAmountEl.textContent = `Rp ${appData.savingsTotal.toLocaleString('id-ID')} / Rp ${activeTarget.amount.toLocaleString('id-ID')}`;
+    const percent = Math.min(100, Math.round((targetSavings / activeTarget.amount) * 100));
 
-    let progressPercent = 0;
-    if (activeTarget.amount > 0) {
-      progressPercent = Math.min(100, Math.round((appData.savingsTotal / activeTarget.amount) * 100));
-    }
+    document.getElementById('activeTargetName').textContent = activeTarget.name;
+    document.getElementById('activeTargetProgressPercent').textContent = `${percent}%`;
+    document.getElementById('activeTargetProgressBar').style.width = `${percent}%`;
+    document.getElementById('activeTargetAmountText').textContent = `Rp ${targetSavings.toLocaleString('id-ID')} / Rp ${activeTarget.amount.toLocaleString('id-ID')}`;
 
-    targetProgressPercent.textContent = `${progressPercent}%`;
-    if (targetProgressBar) {
-      targetProgressBar.style.width = `${progressPercent}%`;
-      if (progressPercent < 30) {
-        targetProgressBar.style.background = 'linear-gradient(90deg, #ef4444, #f87171)';
-      } else if (progressPercent <= 70) {
-        targetProgressBar.style.background = 'linear-gradient(90deg, #f59e0b, #fbbf24)';
+    // Link Produk di Kartu Beranda
+    const linkHomeContainer = document.getElementById('activeTargetLinkContainer');
+    if (linkHomeContainer) {
+      if (activeTarget.link) {
+        linkHomeContainer.innerHTML = `<a href="${activeTarget.link}" target="_blank" rel="noopener noreferrer" class="btn-link-home">🔗 Link Produk</a>`;
       } else {
-        targetProgressBar.style.background = 'linear-gradient(90deg, #10b981, #34d399)';
+        linkHomeContainer.innerHTML = '';
       }
     }
 
-    // Pesta Konfeti 100%
-    if (progressPercent >= 100 && !appData.isCelebrated) {
-      triggerRewardConfetti();
-      appData.isCelebrated = true;
-      localStorage.setItem('sakuquest_data', JSON.stringify(appData));
-      
-      setTimeout(() => {
-        alert(`🎉 SELAMAT! Target kamu "${activeTarget.name}" senilai Rp ${activeTarget.amount.toLocaleString('id-ID')} SUDAH TERCAPAI! 🙌`);
-      }, 400);
+    // Efek Visual Konfeti + Efek Suara Selebrasi Audio Context
+    if (percent >= 100 && !activeTarget.celebrated) {
+      if (typeof confetti === 'function') {
+        confetti({ particleCount: 120, spread: 80, origin: { y: 0.6 } });
+      }
+      playConfettiSound();
+      activeTarget.celebrated = true;
     }
   } else {
-    targetNameEl.textContent = 'Belum Ada Target';
-    targetAmountEl.textContent = 'Rp 0 / Rp 0';
-    targetProgressPercent.textContent = '0%';
-    if (targetProgressBar) targetProgressBar.style.width = '0%';
+    document.getElementById('activeTargetName').textContent = 'Belum Ada Target';
+    document.getElementById('activeTargetProgressPercent').textContent = '0%';
+    document.getElementById('activeTargetProgressBar').style.width = '0%';
+    document.getElementById('activeTargetAmountText').textContent = 'Rp 0 / Rp 0';
+    const linkHomeContainer = document.getElementById('activeTargetLinkContainer');
+    if (linkHomeContainer) linkHomeContainer.innerHTML = '';
   }
 
-  // Render Daftar Seluruh Target Kamu di Tab 2
-  const targetListContainer = document.getElementById('targetListContainer');
-  if (targetListContainer) {
+  const container = document.getElementById('targetListContainer');
+  if (container) {
     if (appData.targets.length === 0) {
-      targetListContainer.innerHTML = '<div class="empty-msg">Belum ada target impian dibuat.</div>';
+      container.innerHTML = '<div class="empty-msg">Belum ada target dibuat.</div>';
     } else {
-      targetListContainer.innerHTML = appData.targets.map(target => {
-        const isActive = activeTarget && activeTarget.id === target.id;
-        let percent = 0;
-        if (target.amount > 0) {
-          percent = Math.min(100, Math.round((appData.savingsTotal / target.amount) * 100));
-        }
+      container.innerHTML = appData.targets.map(t => {
+        const tSavings = appData.transactions
+          .filter(tx => tx.type === 'save' && tx.targetId === t.id)
+          .reduce((sum, tx) => sum + tx.amount, 0);
+        const percent = Math.min(100, Math.round((tSavings / t.amount) * 100));
+        const isActive = activeTarget && activeTarget.id === t.id;
 
         return `
           <div class="target-item-card ${isActive ? 'active-target' : ''}">
             <div class="target-item-header">
-              <strong>${target.name} ${isActive ? '⭐ (Aktif)' : ''}</strong>
-              <small>Rp ${appData.savingsTotal.toLocaleString('id-ID')} / Rp ${target.amount.toLocaleString('id-ID')} (${percent}%)</small>
+              <strong>${t.name} ${isActive ? '⭐ (Aktif)' : ''}</strong>
+              <small>Rp ${tSavings.toLocaleString('id-ID')} / Rp ${t.amount.toLocaleString('id-ID')} (${percent}%)</small>
             </div>
             <div class="progress-bar-bg">
-              <div class="progress-bar-fill" style="width: ${percent}%; background: ${percent < 30 ? '#ef4444' : percent <= 70 ? '#f59e0b' : '#10b981'};"></div>
+              <div class="progress-bar-fill" style="width: ${percent}%;"></div>
             </div>
             <div class="target-actions-btn">
-              ${!isActive ? `<button onclick="selectTarget(${target.id})" class="btn-small btn-select">Pilih Aktif</button>` : ''}
-              <button onclick="deleteTarget(${target.id})" class="btn-small btn-delete">Hapus</button>
+              ${!isActive ? `<button onclick="selectTarget(${t.id})" class="btn-small btn-select">Set Aktif</button>` : ''}
+              ${t.link ? `<a href="${t.link}" target="_blank" rel="noopener noreferrer" class="btn-small btn-action" style="text-decoration:none; display:inline-block; text-align:center;">🔗 Link Produk</a>` : ''}
+              <button onclick="deleteTarget(${t.id})" class="btn-small btn-delete">Hapus</button>
             </div>
           </div>
         `;
       }).join('');
     }
   }
+}
 
-  // Render Badges
-  const badgesContainer = document.getElementById('badgesContainer');
-  if (badgesContainer) {
-    badgesContainer.innerHTML = '';
-    BADGES.forEach(badge => {
-      const isUnlocked = appData.savingsTotal > 0 && appData.streakDays >= badge.reqStreak;
-      const badgeEl = document.createElement('div');
-      badgeEl.className = `badge-item ${isUnlocked ? 'unlocked' : ''}`;
-      badgeEl.innerHTML = `
-        <span class="badge-icon">${badge.icon}</span>
-        <div class="badge-name">${badge.name}</div>
-      `;
-      badgesContainer.appendChild(badgeEl);
-    });
+function renderHistoryLists() {
+  const formatItem = (tx) => {
+    const isPositive = tx.type === 'income' || tx.type === 'withdraw';
+    const sign = isPositive ? '+' : '-';
+    const color = isPositive ? 'var(--accent)' : 'var(--danger)';
+    return `
+      <li class="history-item">
+        <span>${tx.title} <small>(${tx.category || 'Umum'})</small></span>
+        <strong style="color:${color}">${sign} Rp ${tx.amount.toLocaleString('id-ID')}</strong>
+      </li>
+    `;
+  };
+
+  const recentList = document.getElementById('recentHistoryList');
+  if (recentList) {
+    recentList.innerHTML = appData.transactions.length === 0 
+      ? '<li class="empty-msg">Belum ada transaksi.</li>' 
+      : appData.transactions.slice(0, 4).map(formatItem).join('');
   }
 
-  // Render Riwayat Transaksi
-  const historyList = document.getElementById('historyList');
-  if (historyList) {
-    if (appData.expenses.length === 0) {
-      historyList.innerHTML = '<li class="empty-msg">Belum ada pengeluaran dicatat.</li>';
-    } else {
-      historyList.innerHTML = appData.expenses.map(item => `
-        <li class="history-item">
-          <span>${item.title} <small style="color:var(--text-muted)">(${item.date})</small></span>
-          <strong style="color:var(--danger)">- Rp ${item.amount.toLocaleString('id-ID')}</strong>
-        </li>
-      `).join('');
-    }
+  const fullList = document.getElementById('fullHistoryList');
+  if (fullList) {
+    fullList.innerHTML = appData.transactions.length === 0 
+      ? '<li class="empty-msg">Belum ada transaksi.</li>' 
+      : appData.transactions.map(formatItem).join('');
   }
 }
 
-// Fungsi Memilih Target Aktif
 function selectTarget(id) {
   appData.activeTargetId = id;
-  appData.isCelebrated = false;
   saveData();
 }
 
-// Fungsi Menghapus Target
 function deleteTarget(id) {
-  if (confirm('Hapus target impian ini?')) {
+  if (confirm('Hapus target ini?')) {
     appData.targets = appData.targets.filter(t => t.id !== id);
-    if (appData.activeTargetId === id) {
-      appData.activeTargetId = appData.targets.length > 0 ? appData.targets[0].id : null;
-    }
+    if (appData.activeTargetId === id) appData.activeTargetId = null;
     saveData();
   }
 }
 
 // ==========================================
-// 10. UTILITY (EFEK KONFETI)
+// 7. ANALISIS PERIODE
 // ==========================================
-function triggerRewardConfetti() {
-  if (typeof confetti === 'function') {
-    confetti({
-      particleCount: 90,
-      spread: 70,
-      origin: { y: 0.6 }
+function initFilterEvents() {
+  const btns = document.querySelectorAll('.filter-btn');
+  btns.forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      btns.forEach(b => b.classList.remove('active'));
+      e.target.classList.add('active');
+      selectedFilterPeriod = e.target.dataset.period;
+      renderAnalysis();
     });
+  });
+}
+
+function renderAnalysis() {
+  const now = Date.now();
+  const oneDay = 24 * 60 * 60 * 1000;
+
+  const filtered = appData.transactions.filter(tx => {
+    if (tx.type !== 'expense') return false;
+    if (selectedFilterPeriod === 'daily') return tx.date === new Date().toLocaleDateString('id-ID');
+    if (selectedFilterPeriod === 'weekly') return (now - tx.timestamp) <= (7 * oneDay);
+    if (selectedFilterPeriod === 'monthly') return (now - tx.timestamp) <= (30 * oneDay);
+    return true;
+  });
+
+  const categories = {
+    'Makanan': { label: '🍔 Makanan', total: 0, color: '#ef4444' },
+    'Transportasi': { label: '🚌 Transportasi', total: 0, color: '#f59e0b' },
+    'Hiburan': { label: '🎮 Hiburan', total: 0, color: '#6366f1' },
+    'Pendidikan': { label: '📚 Pendidikan', total: 0, color: '#10b981' },
+    'Umum': { label: '📦 Lainnya', total: 0, color: '#94a3b8' }
+  };
+
+  let grandTotal = 0;
+  filtered.forEach(tx => {
+    const cat = tx.category || 'Umum';
+    if (categories[cat]) {
+      categories[cat].total += tx.amount;
+      grandTotal += tx.amount;
+    }
+  });
+
+  drawPieChart(categories, grandTotal);
+
+  const container = document.getElementById('categoryBreakdown');
+  if (grandTotal === 0) {
+    container.innerHTML = '<div class="empty-msg">Belum ada pengeluaran pada periode ini.</div>';
+    return;
   }
+
+  container.innerHTML = Object.keys(categories).map(k => {
+    const item = categories[k];
+    const percent = Math.round((item.total / grandTotal) * 100) || 0;
+    return `
+      <div class="category-row">
+        <span>${item.label} (${percent}%)</span>
+        <strong>Rp ${item.total.toLocaleString('id-ID')}</strong>
+      </div>
+    `;
+  }).join('');
+}
+
+function drawPieChart(categories, grandTotal) {
+  const canvas = document.getElementById('categoryPieChart');
+  if (!canvas) return;
+  const ctx = canvas.getContext('2d');
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+  if (grandTotal === 0) {
+    ctx.beginPath();
+    ctx.arc(100, 100, 70, 0, 2 * Math.PI);
+    ctx.fillStyle = '#334155';
+    ctx.fill();
+    ctx.fillStyle = '#94a3b8';
+    ctx.font = '11px Segoe UI';
+    ctx.textAlign = 'center';
+    ctx.fillText('Tidak ada data', 100, 104);
+    return;
+  }
+
+  let startAngle = 0;
+  Object.keys(categories).forEach(k => {
+    const item = categories[k];
+    if (item.total > 0) {
+      const sliceAngle = (item.total / grandTotal) * 2 * Math.PI;
+      ctx.beginPath();
+      ctx.moveTo(100, 100);
+      ctx.arc(100, 100, 70, startAngle, startAngle + sliceAngle);
+      ctx.closePath();
+      ctx.fillStyle = item.color;
+      ctx.fill();
+      startAngle += sliceAngle;
+    }
+  });
+}
+
+// ==========================================
+// 8. MINI GAMES RETRO (SNAKE & BRICK BREAKER)
+// ==========================================
+let snake = [];
+let snakeDir = 'RIGHT';
+let nextSnakeDir = 'RIGHT';
+let food = { x: 0, y: 0 };
+let paddleX = 110;
+let ball = { x: 150, y: 240, dx: 3, dy: -3 };
+let bricks = [];
+
+function initGameEvents() {
+  const selectSnakeBtn = document.getElementById('selectSnakeBtn');
+  const selectBrickBtn = document.getElementById('selectBrickBtn');
+
+  if (selectSnakeBtn) {
+    selectSnakeBtn.onclick = () => {
+      currentGame = 'snake';
+      selectSnakeBtn.classList.add('active');
+      if (selectBrickBtn) selectBrickBtn.classList.remove('active');
+      resetGameScreen();
+    };
+  }
+
+  if (selectBrickBtn) {
+    selectBrickBtn.onclick = () => {
+      currentGame = 'brick';
+      selectBrickBtn.classList.add('active');
+      if (selectSnakeBtn) selectSnakeBtn.classList.remove('active');
+      resetGameScreen();
+    };
+  }
+
+  const startBtn = document.getElementById('startGameBtn');
+  if (startBtn) {
+    startBtn.onclick = () => {
+      if (currentGame === 'snake') startSnakeGame();
+      else startBrickGame();
+    };
+  }
+
+  window.addEventListener('keydown', (e) => {
+    const k = e.key.toLowerCase();
+    if (currentGame === 'snake') {
+      if ((k === 'w' || k === 'arrowup') && snakeDir !== 'DOWN') nextSnakeDir = 'UP';
+      if ((k === 's' || k === 'arrowdown') && snakeDir !== 'UP') nextSnakeDir = 'DOWN';
+      if ((k === 'a' || k === 'arrowleft') && snakeDir !== 'RIGHT') nextSnakeDir = 'LEFT';
+      if ((k === 'd' || k === 'arrowright') && snakeDir !== 'LEFT') nextSnakeDir = 'RIGHT';
+    } else if (currentGame === 'brick') {
+      if (k === 'a' || k === 'arrowleft') paddleX = Math.max(0, paddleX - 20);
+      if (k === 'd' || k === 'arrowright') paddleX = Math.min(220, paddleX + 20);
+    }
+  });
+
+  const btnUp = document.getElementById('btnUp');
+  const btnDown = document.getElementById('btnDown');
+  const btnLeft = document.getElementById('btnLeft');
+  const btnRight = document.getElementById('btnRight');
+
+  const handleTouch = (btn, action) => {
+    if (!btn) return;
+    const trigger = (e) => {
+      if (e.cancelable) e.preventDefault();
+      action();
+      btn.classList.add('active');
+      setTimeout(() => btn.classList.remove('active'), 100);
+    };
+    btn.addEventListener('touchstart', trigger, { passive: false });
+    btn.addEventListener('click', trigger);
+  };
+
+  handleTouch(btnUp, () => { if (snakeDir !== 'DOWN') nextSnakeDir = 'UP'; });
+  handleTouch(btnDown, () => { if (snakeDir !== 'UP') nextSnakeDir = 'DOWN'; });
+  handleTouch(btnLeft, () => {
+    if (currentGame === 'snake' && snakeDir !== 'RIGHT') nextSnakeDir = 'LEFT';
+    if (currentGame === 'brick') paddleX = Math.max(0, paddleX - 25);
+  });
+  handleTouch(btnRight, () => {
+    if (currentGame === 'snake' && snakeDir !== 'LEFT') nextSnakeDir = 'RIGHT';
+    if (currentGame === 'brick') paddleX = Math.min(220, paddleX + 25);
+  });
+}
+
+function stopGameLoop() {
+  if (gameInterval) clearInterval(gameInterval);
+}
+
+function fixCanvasSize() {
+  const canvas = document.getElementById('gameCanvas');
+  if (!canvas) return null;
+  canvas.width = 300;
+  canvas.height = 300;
+  return canvas;
+}
+
+function resetGameScreen() {
+  stopGameLoop();
+  const canvas = fixCanvasSize();
+  if (!canvas) return;
+
+  const ctx = canvas.getContext('2d');
+  ctx.fillStyle = '#9bbc0f';
+  ctx.fillRect(0, 0, 300, 300);
+  
+  gameScore = 0;
+  document.getElementById('gameScore').textContent = '0';
+  document.getElementById('gameHighScore').textContent = currentGame === 'snake' ? appData.snakeHighScore : appData.brickHighScore;
+}
+
+function spawnSnakeFood() {
+  food = {
+    x: Math.floor(Math.random() * 20),
+    y: Math.floor(Math.random() * 20)
+  };
+}
+
+function startSnakeGame() {
+  stopGameLoop();
+  const canvas = fixCanvasSize();
+  if (!canvas) return;
+
+  snake = [{ x: 5, y: 5 }, { x: 4, y: 5 }, { x: 3, y: 5 }];
+  snakeDir = 'RIGHT';
+  nextSnakeDir = 'RIGHT';
+  gameScore = 0;
+  spawnSnakeFood();
+
+  gameInterval = setInterval(() => {
+    snakeDir = nextSnakeDir;
+
+    const head = { ...snake[0] };
+    if (snakeDir === 'UP') head.y -= 1;
+    if (snakeDir === 'DOWN') head.y += 1;
+    if (snakeDir === 'LEFT') head.x -= 1;
+    if (snakeDir === 'RIGHT') head.x += 1;
+
+    if (head.x < 0 || head.x >= 20 || head.y < 0 || head.y >= 20 || snake.some(s => s.x === head.x && s.y === head.y)) {
+      stopGameLoop();
+      alert(`GAME OVER! Skor: ${gameScore}`);
+      if (gameScore > appData.snakeHighScore) {
+        appData.snakeHighScore = gameScore;
+        saveData();
+      }
+      return;
+    }
+
+    snake.unshift(head);
+
+    if (head.x === food.x && head.y === food.y) {
+      gameScore += 10;
+      document.getElementById('gameScore').textContent = gameScore;
+      spawnSnakeFood();
+    } else {
+      snake.pop();
+    }
+
+    const ctx = canvas.getContext('2d');
+    ctx.fillStyle = '#9bbc0f';
+    ctx.fillRect(0, 0, 300, 300);
+
+    ctx.fillStyle = '#0f380f';
+    snake.forEach(s => ctx.fillRect(s.x * 15, s.y * 15, 14, 14));
+
+    ctx.fillStyle = '#8b0000';
+    ctx.fillRect(food.x * 15, food.y * 15, 14, 14);
+  }, 120);
+}
+
+function startBrickGame() {
+  stopGameLoop();
+  const canvas = fixCanvasSize();
+  if (!canvas) return;
+
+  paddleX = 110;
+  const randomDx = (Math.random() > 0.5 ? 1 : -1) * (2 + Math.random() * 1.5);
+  ball = { x: paddleX + 40, y: 250, dx: randomDx, dy: -3.5 };
+  gameScore = 0;
+
+  bricks = [];
+  for (let r = 0; r < 4; r++) {
+    for (let c = 0; c < 6; c++) {
+      bricks.push({ x: c * 48 + 6, y: r * 18 + 20, alive: true });
+    }
+  }
+
+  gameInterval = setInterval(() => {
+    ball.x += ball.dx;
+    ball.y += ball.dy;
+
+    if (ball.x <= 5) {
+      ball.dx = Math.abs(ball.dx);
+      ball.x = 5;
+    } else if (ball.x >= 295) {
+      ball.dx = -Math.abs(ball.dx);
+      ball.x = 295;
+    }
+
+    if (ball.y <= 5) {
+      ball.dy = Math.abs(ball.dy);
+      ball.y = 5;
+    }
+
+    if (ball.y >= 260 && ball.y <= 270 && ball.x >= paddleX && ball.x <= paddleX + 80) {
+      ball.dy = -Math.abs(ball.dy);
+      const hitPoint = (ball.x - (paddleX + 40)) / 40;
+      ball.dx = hitPoint * 4;
+    }
+
+    if (ball.y > 295) {
+      stopGameLoop();
+      alert(`GAME OVER! Skor: ${gameScore}`);
+      if (gameScore > appData.brickHighScore) {
+        appData.brickHighScore = gameScore;
+        saveData();
+      }
+      return;
+    }
+
+    bricks.forEach(b => {
+      if (b.alive && ball.x >= b.x && ball.x <= b.x + 44 && ball.y >= b.y && ball.y <= b.y + 14) {
+        b.alive = false;
+        ball.dy *= -1;
+        gameScore += 10;
+        document.getElementById('gameScore').textContent = gameScore;
+      }
+    });
+
+    const ctx = canvas.getContext('2d');
+    ctx.fillStyle = '#9bbc0f';
+    ctx.fillRect(0, 0, 300, 300);
+
+    ctx.fillStyle = '#0f380f';
+    ctx.fillRect(paddleX, 265, 80, 10);
+
+    ctx.beginPath();
+    ctx.arc(ball.x, ball.y, 5, 0, Math.PI * 2);
+    ctx.fill();
+
+    bricks.forEach(b => {
+      if (b.alive) ctx.fillRect(b.x, b.y, 44, 14);
+    });
+  }, 20);
 }
